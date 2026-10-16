@@ -38,7 +38,14 @@ def sum_expected_damage(role_detail: RoleDetailData) -> float:
     return total
 
 
-def delta_text(char_name: str, cost: int, before: float, after: float, partial: bool = False) -> str:
+def delta_text(
+    char_name: str,
+    cost: int,
+    before: float,
+    after: float,
+    partial: bool = False,
+    sub_count: int = 0,
+) -> str:
     """回复文案: 伤害提升/降低了约 xx%; partial 时附加核对提醒。"""
     if before <= 0:
         return f"[鸣潮] {char_name} cost{cost} 替换对比失败: 该角色暂无伤害计算数据, 请检查计算模块是否下载完成"
@@ -48,5 +55,5 @@ def delta_text(char_name: str, cost: int, before: float, after: float, partial: 
     else:
         head = f"[鸣潮] {char_name} cost{cost} 替换后伤害降低了约 {abs(pct):.1f}%"
     if partial:
-        head += "\n⚠️ 截图较模糊, 部分副词条未识别到, 结果仅供参考, 建议换清晰截图重试"
+        head += f"\n⚠️ 副词条仅识别到 {sub_count}/5 条, 有词条被漏识别, 结果仅供参考, 建议换清晰截图重试"
     return head

@@ -123,14 +123,14 @@ async def echo_compare(bot: Bot, ev: Event):
     im_left = await draw_panel(ev, uid, char_name, role_detail)
     im_right = await draw_panel(ev, uid, char_name, result.role_detail)
     if not isinstance(im_left, Image.Image) or not isinstance(im_right, Image.Image):
-        return await bot.send(delta_text(char_name, entry.cost, before, after, entry.partial))
+        return await bot.send(delta_text(char_name, entry.cost, before, after, entry.partial, len(entry.subs)))
 
     merged = _concat_pk_images(im_left, im_right)
     from gsuid_core.segment import MessageSegment
     from gsuid_core.utils.image.convert import convert_img
 
     seg = MessageSegment.image(await convert_img(merged))
-    text = delta_text(char_name, entry.cost, before, after, entry.partial)
+    text = delta_text(char_name, entry.cost, before, after, entry.partial, len(entry.subs))
     await bot.send(f"{text}\n(左:替换前 / 右:替换后)")
     await bot.send(seg)
 
