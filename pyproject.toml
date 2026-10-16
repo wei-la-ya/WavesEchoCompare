@@ -1,0 +1,9 @@
+[project]
+name = "waves-echo-compare"
+version = "0.1.0"
+description = "声骸截图替换对比伤害的鸣潮插件，依赖 XutheringWavesUID"
+dependencies = [
+    "httpx>=0.24.0",
+    "pillow>=9.0.0",
+    "rapidocr-onnxruntime>=1.2.0",
+]

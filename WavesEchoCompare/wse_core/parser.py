@@ -1,0 +1,209 @@
+"""OCR 文本行 → 声骸词条结构; cost 主词条白名单强校验。"""
+
+import re
+from dataclasses import field, dataclass
+
+from .ocr import OcrLine
+
+# 主词条满值表, 与 XW role_info_change.phantom_main_value 一致 (仅取实际可出现的档位)
+MAIN_VALUE: dict[str, dict[int, str]] = {
+    "攻击": {1: "18%", 3: "30%", 4: "33%"},
+    "生命": {1: "22.8%", 3: "30%", 4: "33%"},
+    "防御": {1: "18%", 3: "38%", 4: "41.8%"},
+    "暴击": {4: "22%"},
+    "暴击伤害": {4: "44%"},
+    "共鸣效率": {3: "32%"},
+    "治疗效果加成": {4: "26.4%"},
+    "属性伤害加成": {3: "30%"},
+}
+
+# 各 cost 允许的主词条白名单 (cost1/cost3 绝无暴击/暴击伤害)
+MAIN_WHITELIST: dict[int, tuple[str, ...]] = {
+    1: ("攻击", "生命", "防御"),
+    3: ("攻击", "生命", "防御", "属性伤害加成", "共鸣效率"),
+    4: ("攻击", "生命", "防御", "暴击", "暴击伤害", "治疗效果加成"),
+}
+
+# OCR 属性名 → 标准属性名; 匹配方式: 去空格后「包含别名即归一」
+ATTR_ALIASES: tuple[tuple[str, str], ...] = (
+    ("暴击伤害", "暴击伤害"),
+    ("爆伤", "暴击伤害"),
+    ("暴伤", "暴击伤害"),
+    ("暴击率", "暴击"),
+    ("暴击", "暴击"),
+    ("共鸣效率", "共鸣效率"),
+    ("充能", "共鸣效率"),
+    ("共效", "共鸣效率"),
+    ("治疗效果加成", "治疗效果加成"),
+    ("治疗", "治疗效果加成"),
+    ("属性伤害加成", "属性伤害加成"),
+    ("伤害加成", "属性伤害加成"),
+    ("百分比攻击", "攻击"),
+    ("百分比生命", "生命"),
+    ("百分比防御", "防御"),
+    ("攻击", "攻击"),
+    ("生命", "生命"),
+    ("防御", "防御"),
+)
+
+_VALUE_RE = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*(%)?")
+
+
+@dataclass
+class EchoEntry:
+    """一张声骸卡解析结果: cost + 主词条 + 副词条 (名称与截图数值)。
+
+    partial: True 表示副词条少于 4 条 (模糊截图漏识别), 对比结果仅供参考。
+    """
+
+    cost: int
+    main_name: str
+    main_value: str
+    subs: list[tuple[str, str]] = field(default_factory=list)
+    partial: bool = False
+
+
+class EchoParseError(Exception):
+    """解析失败, msg 是给用户看的文案。"""
+
+
+# OCR 常见错字 → 正确属性开头 (实拍图实测高频错字); 命中后走正常包含匹配
+_TYPO_FIX: tuple[tuple[str, str], ...] = (
+    ("量击", "暴击"),
+    ("桑击", "暴击"),
+    ("爆伤", "暴击伤害"),
+    ("玫击", "攻击"),
+    ("玫势", "攻击"),
+    ("共鸡", "共鸣"),
+    ("充能", "共鸣"),
+    ("冫台疗", "治疗"),
+)
+
+
+def normalize_attr(raw: str) -> str | None:
+    text = raw.replace(" ", "").replace("+", "")
+    if not text:
+        return None
+    for typo, fix in _TYPO_FIX:
+        if typo in text:
+            text = text.replace(typo, fix)
+    for alias, std in ATTR_ALIASES:
+        if alias in text:
+            return std
+    return None
+
+
+def _parse_value(raw: str) -> str | None:
+    """从 OCR 行提取数值, 保留 % 单位 (XW subProps 格式: '10.5%' / '60')。"""
+    m = _VALUE_RE.search(raw.replace(" ", ""))
+    if not m:
+        return None
+    num, pct = m.group(1), m.group(2)
+    return f"{num}%" if pct else num
+
+
+def _cluster_cards(lines: list[OcrLine]) -> list[list[OcrLine]]:
+    """按词条文本块的 Y 坐标把行聚成卡 (声骸截图常见为单卡; 多卡按 Y 空隙分组)。"""
+    if not lines:
+        return []
+    ordered = sorted(lines, key=lambda ln: ln.y)
+    cards: list[list[OcrLine]] = [[ordered[0]]]
+    for line in ordered[1:]:
+        prev = cards[-1][-1]
+        # 词条行距通常 ≤ 1.8 行高; 超过视为跨卡/跨区
+        if line.y - prev.y > max(prev.h, line.h) * 4:
+            cards.append([line])
+        else:
+            cards[-1].append(line)
+    return cards
+
+
+def _detect_cost(lines: list[OcrLine], cmd_cost: int | None) -> int | None:
+    if cmd_cost is not None:
+        return cmd_cost
+    for line in lines:
+        text = line.text.replace(" ", "").upper()
+        m = re.search(r"(?:COST|C0?ST)[^0-9]{0,3}([134])", text)
+        if m:
+            return int(m.group(1))
+        m = re.match(r"^C([134])$", text)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _main_from_card(card: list[OcrLine]) -> tuple[str, str] | None:
+    """主词条 = 卡内第一个可归一属性且带数值的行。"""
+    for line in card:
+        text = line.text.strip()
+        if not text:
+            continue
+        attr = normalize_attr(text)
+        if attr is None:
+            continue
+        value = _parse_value(text)
+        if value is None:
+            continue
+        return attr, text
+    return None
+
+
+def _card_has_cost(card: list[OcrLine], cost: int) -> bool:
+    """卡内是否出现与 cost 对应的 COST 字样 (多卡截图时用于选卡)。"""
+    for line in card:
+        text = line.text.replace(" ", "").upper()
+        if f"COST{cost}" in text or re.fullmatch(rf"C?0?ST?{cost}", text):
+            return True
+    return False
+
+
+def parse_echo_lines(lines: list[OcrLine], cmd_cost: int | None) -> EchoEntry:
+    cost = _detect_cost(lines, cmd_cost)
+    if cost is None:
+        raise EchoParseError("[鸣潮] 未能从截图中识别出 COST, 请在命令中带上 cost, 如: ww角色名提升3")
+    if cost not in (1, 3, 4):
+        raise EchoParseError("[鸣潮] 仅支持替换 cost1 / cost3 / cost4 声骸")
+
+    cards = _cluster_cards(lines)
+    # 多卡截图: 优先选带 COST 字样的卡; 无则退化到副词条最多的卡
+    with_cost = [c for c in cards if _card_has_cost(c, cost)]
+    candidates = with_cost or cards
+    best: tuple[int, tuple[str, str], list[tuple[str, str]]] | None = None
+    for card in candidates:
+        main = _main_from_card(card)
+        if main is None:
+            continue
+        subs: list[tuple[str, str]] = []
+        seen_main = False
+        for line in card:
+            text = line.text.strip()
+            attr = normalize_attr(text)
+            value = _parse_value(text) if attr else None
+            if attr is None or value is None:
+                continue
+            if not seen_main:
+                seen_main = True
+                continue
+            subs.append((attr, text))
+        if best is None or len(subs) > len(best[2]):
+            best = (cost, main, subs)
+
+    if best is None:
+        raise EchoParseError("[鸣潮] 未能从截图中识别出主词条, 请发送更清晰的声骸详情截图")
+
+    main_name, _main_raw = best[1]
+    if main_name not in MAIN_WHITELIST[cost]:
+        allow = "、".join(MAIN_WHITELIST[cost])
+        raise EchoParseError(f"[鸣潮] cost{cost} 不存在主词条「{main_name}」(可选: {allow}), 识别可能有误, 请核对截图")
+
+    entry = EchoEntry(cost=cost, main_name=main_name, main_value=MAIN_VALUE[main_name][cost])
+    for _attr, raw in best[2]:
+        sub_attr = normalize_attr(raw)
+        sub_value = _parse_value(raw)
+        if sub_attr is None or sub_value is None:
+            continue
+        entry.subs.append((sub_attr, sub_value))
+    if len(entry.subs) < 1:
+        raise EchoParseError("[鸣潮] 未识别到副词条, 请发送声骸详情截图 (含词条列表)")
+    entry.partial = len(entry.subs) < 4
+    return entry

@@ -1,0 +1,10 @@
+{
+  "include": ["WavesEchoCompare"],
+  "typeCheckingMode": "basic",
+  "venvPath": "../../..",
+  "venv": ".venv",
+  "extraPaths": [
+    "../../.."
+  ],
+  "exclude": ["**/__pycache__"]
+}

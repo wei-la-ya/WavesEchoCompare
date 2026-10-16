@@ -1,0 +1,77 @@
+"""替换面板声骸词条; cost3/cost1 双槽位取伤害更优者。"""
+
+import copy
+from dataclasses import dataclass
+
+from gsuid_core.plugins.XutheringWavesUID.XutheringWavesUID.utils.api.model import (
+    Props,
+    RoleDetailData,
+)
+
+from .parser import MAIN_VALUE
+
+
+class ReplaceError(Exception):
+    """替换失败, msg 是给用户看的文案。"""
+
+
+def _cost_slots(role_detail: RoleDetailData, cost: int) -> list[int]:
+    """面板 equipPhantomList 中该 cost 的槽位下标列表。"""
+    pd = role_detail.phantomData
+    eq = pd.equipPhantomList if pd else None
+    if not eq:
+        return []
+    return [i for i, ep in enumerate(eq) if ep and ep.cost == cost]
+
+
+def _apply_entry(role_detail: RoleDetailData, entry, slot_index: int) -> None:
+    """把截图词条写进指定槽位: 主词条满值 + 副词条按截图数值。"""
+    pd = role_detail.phantomData
+    eq = pd.equipPhantomList if pd else None
+    if not eq:
+        raise ReplaceError("[鸣潮] 面板无声骸数据, 请先刷新面板")
+    slot = eq[slot_index]
+    if slot is None:
+        raise ReplaceError("[鸣潮] 目标槽位无声骸, 请先刷新面板")
+    main_name = entry.main_name
+    if main_name == "属性伤害加成":
+        main_name = f"{role_detail.role.attributeName}伤害加成"
+    main_value = MAIN_VALUE[entry.main_name][entry.cost]
+    if slot.mainProps:
+        slot.mainProps[0] = Props(attributeName=main_name, attributeValue=main_value)
+    else:
+        slot.mainProps = [Props(attributeName=main_name, attributeValue=main_value)]
+    slot.subProps = [Props(attributeName=name, attributeValue=value) for name, value in entry.subs]
+
+
+@dataclass
+class ReplaceResult:
+    """择优结果: 替换后面板 + 选定槽位 + 该面板伤害求和 (择优时已算)。"""
+
+    role_detail: RoleDetailData
+    slot_index: int
+    damage_sum: float
+
+
+def replace_phantom(
+    role_detail: RoleDetailData,
+    entry,
+    sum_damage,
+) -> ReplaceResult:
+    """在所有同 cost 槽位上试替换, 取伤害求和更高者。
+
+    sum_damage: Callable[[RoleDetailData], float] — 伤害求和函数 (damage.py 提供)。
+    """
+    slots = _cost_slots(role_detail, entry.cost)
+    if not slots:
+        raise ReplaceError(f"[鸣潮] 面板上没有 cost{entry.cost} 声骸槽位")
+
+    best: tuple[float, int, RoleDetailData] | None = None
+    for idx in slots:
+        candidate = copy.deepcopy(role_detail)
+        _apply_entry(candidate, entry, idx)
+        score = sum_damage(candidate)
+        if best is None or score > best[0]:
+            best = (score, idx, candidate)
+    assert best is not None
+    return ReplaceResult(role_detail=best[2], slot_index=best[1], damage_sum=best[0])
