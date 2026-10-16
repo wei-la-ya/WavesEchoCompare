@@ -1,6 +1,6 @@
 # WavesEchoCompare
 
-鸣潮声骸截图对比插件（依赖 [XutheringWavesUID](../XutheringWavesUID)）。
+鸣潮声骸截图对比插件，依赖 [XutheringWavesUID](https://github.com/Loping151/XutheringWavesUID)（需先行安装）。
 
 ## 用法
 

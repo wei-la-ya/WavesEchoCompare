@@ -1,6 +1,6 @@
 # WavesEchoCompare 插件设计文档
 
-> 依赖 XutheringWavesUID（下称 XW）。功能：用户发送声骸截图 + `ww角色名提升[cost]`，
+> 依赖 [XutheringWavesUID](https://github.com/Loping151/XutheringWavesUID)（下称 XW）。功能：用户发送声骸截图 + `ww角色名提升[cost]`，
 > 插件识别截图声骸词条 → 替换到绑定 UID 面板对应 cost 槽位 → 渲染替换后面板图 →
 > 对比替换前后「全部伤害类型求和」，回复「伤害提升了约 XXX」/「伤害降低了约 XXX」。
 
