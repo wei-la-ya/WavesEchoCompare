@@ -53,16 +53,13 @@ async def _download_image(url: str) -> Image.Image:
 
 
 @sv_waves_echo_compare.on_regex(
-    (
-        rf"^(?P<char>{PATTERN})提升(?P<cost>[1-4])$",
-        rf"^(?P<char>{PATTERN})(?P<alias>声骸比一比|比一比)$",
-    ),
+    rf"^(?P<char>{PATTERN})提升预估(?P<cost>[1-4])?$",
     block=True,
 )
 async def echo_compare(bot: Bot, ev: Event):
-    """入口一: ww<角色>提升[cost] (cost 必填, 避免截胡 XW 的「提升」优化建议命令)。
+    """ww<角色>提升预估[cost]: cost 可选, 缺省时由截图识别。
 
-    入口二: ww<角色>声骸比一比 / ww<角色>比一比 (cost 由截图识别)。
+    「提升预估」字面不与 XW 的「提升」(优化建议) 命令冲突。
     """
     char = ev.regex_dict.get("char")
     if not char:
@@ -72,7 +69,7 @@ async def echo_compare(bot: Bot, ev: Event):
 
     url = _pick_image_url(ev)
     if url is None:
-        return await bot.send("[鸣潮] 请同时发送声骸截图, 例: ww长离提升3 + 声骸详情图, 或 ww长离声骸比一比 + 截图")
+        return await bot.send("[鸣潮] 请同时发送声骸截图, 例: ww长离提升预估3 + 声骸详情图")
 
     from gsuid_core.plugins.XutheringWavesUID.XutheringWavesUID.utils.name_convert import (
         alias_to_char_name,
