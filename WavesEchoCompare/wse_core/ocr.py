@@ -89,27 +89,14 @@ def _run_once(im: Image.Image) -> list[OcrLine]:
 
 
 _PASS_SCALES = (2.0, 1.5, 3.0)
+_EXTRA_SCALES = (1.5, 3.0)
 
 
-@to_thread
-def run_ocr(im: Image.Image) -> list[OcrLine]:
-    """多 pass 识别: 原图 + 2x + 1.5x + 3x LANCZOS 放大 (拍屏模糊/摩尔纹补偿), 行合并。
-
-    合并规则: 同一视觉行且 x 重叠 → 取文本更长行; x 不重叠 (名称/数值分列) → 拼接。
-    3x pass 补救大图中深色底小字名称行的漏识别。
-    """
-    passes: list[list[OcrLine]] = [_run_once(im)]
-    for scale in _PASS_SCALES:
-        try:
-            w, h = int(im.size[0] * scale), int(im.size[1] * scale)
-            up = im.resize((w, h), Image.Resampling.LANCZOS)
-            passes.append(_run_once(up))
-        except Exception as e:
-            logger.debug(f"[鸣潮·声骸对比] {scale}x 放大 pass 失败, 跳过: {e}")
-
+def _merge_lines(line_groups: list[list[OcrLine]], scales: list[float]) -> list[OcrLine]:
+    """合并多个 pass 的行: 坐标归一化 → 同行拼接/取优。"""
     normalized: list[OcrLine] = []
-    for idx, p in enumerate(passes):
-        scale = _PASS_SCALES[idx - 1] if idx > 0 else 1.0
+    for idx, p in enumerate(line_groups):
+        scale = scales[idx] if idx < len(scales) else 1.0
         for ln in p:
             if scale == 1.0:
                 normalized.append(ln)
@@ -152,3 +139,36 @@ def run_ocr(im: Image.Image) -> list[OcrLine]:
         else:
             merged.append(ln)
     return merged
+
+
+def _run_scaled(im: Image.Image, scale: float) -> list[OcrLine]:
+    w, h = int(im.size[0] * scale), int(im.size[1] * scale)
+    up = im.resize((w, h), Image.Resampling.LANCZOS)
+    return _run_once(up)
+
+
+@to_thread
+def run_ocr_fast(im: Image.Image) -> list[OcrLine]:
+    """快速识别: 原图 + 2x 两个 pass (清晰截图足够)。"""
+    groups: list[list[OcrLine]] = [_run_once(im)]
+    scales: list[float] = [1.0]
+    try:
+        groups.append(_run_scaled(im, 2.0))
+        scales.append(2.0)
+    except Exception as e:
+        logger.debug(f"[鸣潮·声骸对比] 2x 放大 pass 失败: {e}")
+    return _merge_lines(groups, scales)
+
+
+@to_thread
+def run_ocr_extra(im: Image.Image) -> list[OcrLine]:
+    """补救识别: 快速结果 + 1.5x + 3x 合并 (模糊/漏识别时用)。"""
+    groups: list[list[OcrLine]] = [_run_once(im)]
+    scales: list[float] = [1.0]
+    for scale in _EXTRA_SCALES:
+        try:
+            groups.append(_run_scaled(im, scale))
+            scales.append(scale)
+        except Exception as e:
+            logger.debug(f"[鸣潮·声骸对比] {scale}x 放大 pass 失败, 跳过: {e}")
+    return _merge_lines(groups, scales)

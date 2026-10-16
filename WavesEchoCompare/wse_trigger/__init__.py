@@ -12,7 +12,7 @@ from gsuid_core.bot import Bot
 from gsuid_core.logger import logger
 from gsuid_core.models import Event
 
-from ..wse_core.ocr import OcrLine, run_ocr
+from ..wse_core.ocr import OcrLine, run_ocr_fast, run_ocr_extra
 from ..wse_core.damage import delta_text, sum_expected_damage
 from ..wse_core.parser import EchoParseError, parse_echo_lines
 from ..wse_core.replace import ReplaceError as ReplaceError, replace_phantom
@@ -104,8 +104,13 @@ async def echo_compare(bot: Bot, ev: Event):
         return await bot.send("[鸣潮] 声骸截图下载失败, 请重试")
 
     try:
-        lines: list[OcrLine] = await run_ocr(im)
+        # 快速路径: 1x+2x 两 pass; 解析出的副词条不足 5 条时再跑 1.5x+3x 补救
+        lines: list[OcrLine] = await run_ocr_fast(im)
         entry = parse_echo_lines(lines, cmd_cost)
+        if entry.partial:
+            logger.info("[鸣潮·声骸对比] 快速识别副词条不足, 启动补救 pass")
+            lines = await run_ocr_extra(im)
+            entry = parse_echo_lines(lines, cmd_cost)
     except EchoParseError as e:
         return await bot.send(str(e))
 
