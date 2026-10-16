@@ -88,14 +88,15 @@ def _run_once(im: Image.Image) -> list[OcrLine]:
     return lines
 
 
-_PASS_SCALES = (2.0, 1.5)
+_PASS_SCALES = (2.0, 1.5, 3.0)
 
 
 @to_thread
 def run_ocr(im: Image.Image) -> list[OcrLine]:
-    """多 pass 识别: 原图 + 2x + 1.5x LANCZOS 放大 (拍屏模糊/摩尔纹补偿), 行合并。
+    """多 pass 识别: 原图 + 2x + 1.5x + 3x LANCZOS 放大 (拍屏模糊/摩尔纹补偿), 行合并。
 
     合并规则: 同一视觉行且 x 重叠 → 取文本更长行; x 不重叠 (名称/数值分列) → 拼接。
+    3x pass 补救大图中深色底小字名称行的漏识别。
     """
     passes: list[list[OcrLine]] = [_run_once(im)]
     for scale in _PASS_SCALES:
@@ -132,7 +133,9 @@ def run_ocr(im: Image.Image) -> list[OcrLine]:
             continue
         prev = merged[-1]
         same_row = abs(ln.y - prev.y) <= max(prev.h, ln.h, 12)
-        if same_row and ln.x <= prev.x + prev.w:
+        # x 区间相交判定 (双向): [ln.x, ln.x+ln.w] ∩ [prev.x, prev.x+prev.w] 非空
+        overlaps = ln.x <= prev.x + prev.w and prev.x <= ln.x + ln.w
+        if same_row and overlaps:
             # 同一视觉行且 x 重叠: 保留文本更长 (信息更全) 的一行
             if len(ln.text) > len(prev.text):
                 merged[-1] = ln
