@@ -150,12 +150,22 @@ def _pure_value_line(text: str) -> str | None:
     return t
 
 
+# 描述文案动词: 带这些词的行是套装/技能描述, 不是词条行
+_DESC_VERBS = ("提升", "增加", "造成", "获得", "降低", "减少", "解锁", "强化")
+
+
+def _is_desc_text(text: str) -> bool:
+    """套装/技能描述文案过滤: 词条行格式固定为「属性名+数值」, 不会含动词。"""
+    return any(v in text for v in _DESC_VERBS)
+
+
 def _extract_prop_rows(card: list[OcrLine]) -> list[tuple[str, str]]:
     """从卡内文本行提取 (属性名, 数值) 列表。
 
     支持两种布局:
     A. 单行自含: '暴击 10.5%'
     B. 名称/数值分列: 名称行 '导电伤害加成' + 右侧紧邻的纯数值行 '30.0%'
+    套装/技能描述文案 (含动词) 直接排除。
     """
     rows: list[tuple[str, str]] = []
     used: set[int] = set()
@@ -164,7 +174,7 @@ def _extract_prop_rows(card: list[OcrLine]) -> list[tuple[str, str]]:
         if i in used:
             continue
         text = line.text.strip()
-        if not text:
+        if not text or _is_desc_text(text):
             continue
         attr = normalize_attr(text)
         if attr is None:
@@ -241,12 +251,19 @@ def parse_echo_lines(lines: list[OcrLine], cmd_cost: int | None) -> EchoEntry:
             continue
         remaining.append((attr, value))
     if main2 is None:
-        # OCR 数值抖动容错: 固定词条行属性匹配但数值微差时, 仍按固定满值处理
+        # OCR 数值抖动容错: 平值与固定满值偏差 ≤15% 才视为固定主词条
+        # (副词条平攻最高 ~70, 与固定攻击 100/150 距离足够, 不会误吞)
+        fixed_num = float(fixed_value)
         for i, (attr, value) in enumerate(remaining):
-            if attr == fixed_attr and "%" not in value:
-                main2 = (fixed_attr, fixed_value)
-                del remaining[i]
-                break
+            if attr != fixed_attr or "%" in value:
+                continue
+            try:
+                if abs(float(value) - fixed_num) <= fixed_num * 0.15:
+                    main2 = (fixed_attr, fixed_value)
+                    del remaining[i]
+                    break
+            except ValueError:
+                continue
 
     if not remaining:
         raise EchoParseError("[鸣潮] 未能从截图中识别出主词条, 请发送更清晰的声骸详情截图")
