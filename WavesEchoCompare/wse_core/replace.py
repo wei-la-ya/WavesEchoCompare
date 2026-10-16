@@ -2,6 +2,7 @@
 
 import copy
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 
 from gsuid_core.plugins.XutheringWavesUID.XutheringWavesUID.utils.api.model import (
     Props,
@@ -93,14 +94,25 @@ def _rebuild_add_prop_list(role_detail: RoleDetailData) -> None:
     role_detail.equipPhantomAddPropList = props
 
 
+def _build_candidate(role_detail: RoleDetailData, entry, idx: int) -> RoleDetailData:
+    """构造替换指定槽位后的候选面板 (词条 + 属性汇总重算)。"""
+    candidate = copy.deepcopy(role_detail)
+    _apply_entry(candidate, entry, idx)
+    _rebuild_add_prop_list(candidate)
+    return candidate
+
+
 def replace_phantom(
     role_detail: RoleDetailData,
     entry,
     sum_damage,
+    pool: ThreadPoolExecutor | None = None,
 ) -> ReplaceResult:
     """在所有同 cost 槽位上试替换, 取伤害求和更高者。
 
     sum_damage: Callable[[RoleDetailData], float] — 伤害求和函数 (damage.py 提供)。
+    多槽位候选用线程池并行计算 (WuWaCalc 为 C 扩展, GIL 已释放);
+    pool 由调用方传入以复用线程 (基线计算同池并行)。
     """
     from gsuid_core.logger import logger
 
@@ -108,15 +120,16 @@ def replace_phantom(
     if not slots:
         raise ReplaceError(f"[鸣潮] 面板上没有 cost{entry.cost} 声骸槽位")
 
-    best: tuple[float, int, RoleDetailData] | None = None
-    for idx in slots:
-        candidate = copy.deepcopy(role_detail)
-        _apply_entry(candidate, entry, idx)
-        _rebuild_add_prop_list(candidate)
-        score = sum_damage(candidate)
-        if best is None or score > best[0]:
-            best = (score, idx, candidate)
-    assert best is not None
+    candidates = [_build_candidate(role_detail, entry, idx) for idx in slots]
+    if pool is not None:
+        scores = list(pool.map(sum_damage, candidates))
+    elif len(candidates) > 1:
+        with ThreadPoolExecutor(max_workers=len(candidates)) as owned:
+            scores = list(owned.map(sum_damage, candidates))
+    else:
+        scores = [sum_damage(candidates[0])]
+    best_idx = max(range(len(slots)), key=lambda i: scores[i])
+    best = (scores[best_idx], slots[best_idx], candidates[best_idx])
     # 诊断: 替换生效性自证 — 输出替换槽位前后的完整词条
     old_pd = role_detail.phantomData
     new_pd = best[2].phantomData
