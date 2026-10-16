@@ -19,6 +19,7 @@ class OcrLine:
     x: int
     y: int
     h: int
+    w: int = 0
 
 
 _engine = None
@@ -81,6 +82,7 @@ def _run_once(im: Image.Image) -> list[OcrLine]:
                 x=min(xs),
                 y=min(ys),
                 h=max(ys) - min(ys),
+                w=max(xs) - min(xs),
             )
         )
     return lines
@@ -105,18 +107,31 @@ def run_ocr(im: Image.Image) -> list[OcrLine]:
         return second
 
     # 2x 图的坐标缩回原图尺度再合并
-    scaled = [OcrLine(text=ln.text, score=ln.score, x=ln.x // 2, y=ln.y // 2, h=ln.h // 2) for ln in second]
+    scaled = [
+        OcrLine(text=ln.text, score=ln.score, x=ln.x // 2, y=ln.y // 2, h=ln.h // 2, w=ln.w // 2) for ln in second
+    ]
     merged: list[OcrLine] = []
-    all_lines = sorted([*first, *scaled], key=lambda ln: ln.y)
+    all_lines = sorted([*first, *scaled], key=lambda ln: (ln.y, ln.x))
     for ln in all_lines:
         if not merged:
             merged.append(ln)
             continue
         prev = merged[-1]
-        if abs(ln.y - prev.y) <= max(prev.h, ln.h, 12):
-            # 同一文本行: 保留文本更长 (信息更全) 的一行
+        same_row = abs(ln.y - prev.y) <= max(prev.h, ln.h, 12)
+        if same_row and ln.x <= prev.x + prev.w:
+            # 同一视觉行且 x 重叠: 保留文本更长 (信息更全) 的一行
             if len(ln.text) > len(prev.text):
                 merged[-1] = ln
+        elif same_row:
+            # 同一视觉行但 x 分列 (名称/数值两段布局): 拼接
+            merged[-1] = OcrLine(
+                text=f"{prev.text} {ln.text}",
+                score=min(prev.score, ln.score),
+                x=min(prev.x, ln.x),
+                y=min(prev.y, ln.y),
+                h=max(prev.h, ln.h),
+                w=max(prev.x + prev.w, ln.x + ln.w) - min(prev.x, ln.x),
+            )
         else:
             merged.append(ln)
     return merged

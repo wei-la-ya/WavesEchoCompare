@@ -132,20 +132,64 @@ def _detect_cost(lines: list[OcrLine], cmd_cost: int | None) -> int | None:
     return None
 
 
-def _main_from_card(card: list[OcrLine]) -> tuple[str, str] | None:
-    """主词条 = 卡内第一个可归一属性且带数值的行。"""
-    for line in card:
+def _pure_value_line(text: str) -> str | None:
+    """整行是纯数值 (可能带%), 用于「名称/数值分列」布局的数值行匹配。"""
+    t = text.replace(" ", "")
+    if not t or not re.fullmatch(r"[+-]?\d+(?:\.\d+)?%?", t):
+        return None
+    return t
+
+
+def _extract_prop_rows(card: list[OcrLine]) -> list[tuple[str, str]]:
+    """从卡内文本行提取 (属性名, 数值) 列表。
+
+    支持两种布局:
+    A. 单行自含: '暴击 10.5%'
+    B. 名称/数值分列: 名称行 '导电伤害加成' + 右侧紧邻的纯数值行 '30.0%'
+    """
+    rows: list[tuple[str, str]] = []
+    used: set[int] = set()
+    ordered = sorted(card, key=lambda ln: (ln.y, ln.x))
+    for i, line in enumerate(ordered):
+        if i in used:
+            continue
         text = line.text.strip()
         if not text:
             continue
         attr = normalize_attr(text)
         if attr is None:
             continue
-        value = _parse_value(text)
-        if value is None:
+        inline = _parse_value(text)
+        if inline is not None:
+            rows.append((attr, inline))
+            used.add(i)
             continue
-        return attr, text
-    return None
+        # 无内联数值: 找紧随其下的纯数值行 (x 在名称行右侧, 垂直间距 ≤ 2 行高)
+        matched_idx: int | None = None
+        for j in range(i + 1, len(ordered)):
+            cand = ordered[j]
+            if cand.y - line.y > max(line.h, cand.h) * 2.5:
+                break
+            if j in used:
+                continue
+            val = _pure_value_line(cand.text)
+            if val is None:
+                continue
+            if cand.x >= line.x + line.w // 2:
+                matched_idx = j
+                break
+        if matched_idx is not None:
+            rows.append((attr, ordered[matched_idx].text.strip()))
+            used.add(i)
+            used.add(matched_idx)
+    return rows
+
+
+def _main_from_rows(rows: list[tuple[str, str]]) -> tuple[str, str] | None:
+    """主词条 = 第一个词条行。"""
+    if not rows:
+        return None
+    return rows[0]
 
 
 def _card_has_cost(card: list[OcrLine], cost: int) -> bool:
@@ -165,44 +209,25 @@ def parse_echo_lines(lines: list[OcrLine], cmd_cost: int | None) -> EchoEntry:
         raise EchoParseError("[鸣潮] 仅支持替换 cost1 / cost3 / cost4 声骸")
 
     cards = _cluster_cards(lines)
-    # 多卡截图: 优先选带 COST 字样的卡; 无则退化到副词条最多的卡
+    # 多卡截图: 优先选带 COST 字样的卡; 无则全部参选 (声骸浮窗截图无 COST 字样)
     with_cost = [c for c in cards if _card_has_cost(c, cost)]
     candidates = with_cost or cards
-    best: tuple[int, tuple[str, str], list[tuple[str, str]]] | None = None
+    best: list[tuple[str, str]] | None = None
     for card in candidates:
-        main = _main_from_card(card)
-        if main is None:
-            continue
-        subs: list[tuple[str, str]] = []
-        seen_main = False
-        for line in card:
-            text = line.text.strip()
-            attr = normalize_attr(text)
-            value = _parse_value(text) if attr else None
-            if attr is None or value is None:
-                continue
-            if not seen_main:
-                seen_main = True
-                continue
-            subs.append((attr, text))
-        if best is None or len(subs) > len(best[2]):
-            best = (cost, main, subs)
+        rows = _extract_prop_rows(card)
+        if best is None or len(rows) > len(best):
+            best = rows
 
-    if best is None:
+    if not best:
         raise EchoParseError("[鸣潮] 未能从截图中识别出主词条, 请发送更清晰的声骸详情截图")
 
-    main_name, _main_raw = best[1]
+    main_name = best[0][0]
     if main_name not in MAIN_WHITELIST[cost]:
         allow = "、".join(MAIN_WHITELIST[cost])
         raise EchoParseError(f"[鸣潮] cost{cost} 不存在主词条「{main_name}」(可选: {allow}), 识别可能有误, 请核对截图")
 
     entry = EchoEntry(cost=cost, main_name=main_name, main_value=MAIN_VALUE[main_name][cost])
-    for _attr, raw in best[2]:
-        sub_attr = normalize_attr(raw)
-        sub_value = _parse_value(raw)
-        if sub_attr is None or sub_value is None:
-            continue
-        entry.subs.append((sub_attr, sub_value))
+    entry.subs = [(attr, value) for attr, value in best[1:]]
     if len(entry.subs) < 1:
         raise EchoParseError("[鸣潮] 未识别到副词条, 请发送声骸详情截图 (含词条列表)")
     entry.partial = len(entry.subs) < 4
