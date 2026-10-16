@@ -268,10 +268,21 @@ def parse_echo_lines(lines: list[OcrLine], cmd_cost: int | None) -> EchoEntry:
     if not remaining:
         raise EchoParseError("[鸣潮] 未能从截图中识别出主词条, 请发送更清晰的声骸详情截图")
 
+    # 主词条 1 数值必须等于该 cost 满值 (主词条数值恒定)
+    # 防止强化确认弹窗等无主词条截图被副词条数值硬凑通过
     main_name = remaining[0][0]
     if main_name not in MAIN_WHITELIST[cost]:
         allow = "、".join(MAIN_WHITELIST[cost])
         raise EchoParseError(f"[鸣潮] cost{cost} 不存在主词条「{main_name}」(可选: {allow}), 识别可能有误, 请核对截图")
+    main_full = float(MAIN_VALUE[main_name][cost].rstrip("%"))
+    first_value = remaining[0][1].rstrip("%")
+    try:
+        if abs(float(first_value) - main_full) > main_full * 0.1:
+            raise EchoParseError(
+                "[鸣潮] 截图中未识别到主词条 (首个词条数值与满值不符), 请发送声骸详情截图, 不要使用强化/重构等页面"
+            )
+    except ValueError:
+        raise EchoParseError("[鸣潮] 主词条数值识别异常, 请发送更清晰的声骸详情截图") from None
 
     entry = EchoEntry(cost=cost, main_name=main_name, main_value=MAIN_VALUE[main_name][cost])
     if main2 is not None:
@@ -279,5 +290,6 @@ def parse_echo_lines(lines: list[OcrLine], cmd_cost: int | None) -> EchoEntry:
     entry.subs = remaining[1:]
     if len(entry.subs) < 1:
         raise EchoParseError("[鸣潮] 未识别到副词条, 请发送声骸详情截图 (含词条列表)")
-    entry.partial = len(entry.subs) < 4
+    # 满 25 级声骸应识别到 5 条副词条; 不足即提醒
+    entry.partial = len(entry.subs) < 5
     return entry

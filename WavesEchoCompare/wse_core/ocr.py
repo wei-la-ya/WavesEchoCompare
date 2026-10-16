@@ -1,4 +1,4 @@
-"""声骸截图 OCR 识别 (rapidocr 懒加载, to_thread 执行, 双 pass 抗模糊)。"""
+"""声骸截图 OCR 识别 (rapidocr 懒加载, to_thread 执行, 多 pass 抗模糊)。"""
 
 from dataclasses import dataclass
 
@@ -88,30 +88,44 @@ def _run_once(im: Image.Image) -> list[OcrLine]:
     return lines
 
 
+_PASS_SCALES = (2.0, 1.5)
+
+
 @to_thread
 def run_ocr(im: Image.Image) -> list[OcrLine]:
-    """双 pass 识别: 原图 + 2x LANCZOS 放大 (拍屏模糊/摩尔纹补偿), 行合并。
+    """多 pass 识别: 原图 + 2x + 1.5x LANCZOS 放大 (拍屏模糊/摩尔纹补偿), 行合并。
 
-    合并规则: 按 Y 聚簇, 每簇取文本最长的一行 (模糊图常漏识别行, 补全优先)。
+    合并规则: 同一视觉行且 x 重叠 → 取文本更长行; x 不重叠 (名称/数值分列) → 拼接。
     """
-    first = _run_once(im)
-    try:
-        up = im.resize((im.size[0] * 2, im.size[1] * 2), Image.Resampling.LANCZOS)
-        second = _run_once(up)
-    except Exception as e:
-        logger.debug(f"[鸣潮·声骸对比] 2x 放大 pass 失败, 仅用原图: {e}")
-        second = []
-    if not second:
-        return first
-    if not first:
-        return second
+    passes: list[list[OcrLine]] = [_run_once(im)]
+    for scale in _PASS_SCALES:
+        try:
+            w, h = int(im.size[0] * scale), int(im.size[1] * scale)
+            up = im.resize((w, h), Image.Resampling.LANCZOS)
+            passes.append(_run_once(up))
+        except Exception as e:
+            logger.debug(f"[鸣潮·声骸对比] {scale}x 放大 pass 失败, 跳过: {e}")
 
-    # 2x 图的坐标缩回原图尺度再合并
-    scaled = [
-        OcrLine(text=ln.text, score=ln.score, x=ln.x // 2, y=ln.y // 2, h=ln.h // 2, w=ln.w // 2) for ln in second
-    ]
+    normalized: list[OcrLine] = []
+    for idx, p in enumerate(passes):
+        scale = _PASS_SCALES[idx - 1] if idx > 0 else 1.0
+        for ln in p:
+            if scale == 1.0:
+                normalized.append(ln)
+            else:
+                normalized.append(
+                    OcrLine(
+                        text=ln.text,
+                        score=ln.score,
+                        x=int(ln.x / scale),
+                        y=int(ln.y / scale),
+                        h=max(int(ln.h / scale), 1),
+                        w=int(ln.w / scale),
+                    )
+                )
+
     merged: list[OcrLine] = []
-    all_lines = sorted([*first, *scaled], key=lambda ln: (ln.y, ln.x))
+    all_lines = sorted(normalized, key=lambda ln: (ln.y, ln.x))
     for ln in all_lines:
         if not merged:
             merged.append(ln)
