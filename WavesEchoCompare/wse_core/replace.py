@@ -57,6 +57,42 @@ class ReplaceResult:
     damage_sum: float
 
 
+def _rebuild_add_prop_list(role_detail: RoleDetailData) -> None:
+    """替换声骸后重算 equipPhantomAddPropList (声骸词条汇总)。
+
+    API 返回的该字段是静态汇总, 替换 phantomData 不会同步; 若总属性计算读取
+    此字段而不读 phantomData, 就会出现「词条换了但总属性不变」。
+    汇总规则: 遍历全部槽位主+副词条, 同名同单位 (百分比/固定) 数值相加。
+    """
+    pd = role_detail.phantomData
+    eq = pd.equipPhantomList if pd else None
+    if not eq:
+        return
+    merged: dict[tuple[str, bool], float] = {}
+    order: list[tuple[str, bool]] = []
+    for slot in eq:
+        if slot is None:
+            continue
+        for prop in [*(slot.mainProps or []), *(slot.subProps or [])]:
+            raw = prop.attributeValue.strip()
+            is_pct = raw.endswith("%")
+            try:
+                num = float(raw.rstrip("%"))
+            except ValueError:
+                continue
+            key = (prop.attributeName, is_pct)
+            if key not in merged:
+                order.append(key)
+                merged[key] = 0.0
+            merged[key] += num
+    props: list[Props] = []
+    for name, is_pct in order:
+        val = merged[(name, is_pct)]
+        text = f"{round(val, 1)}%" if is_pct else f"{int(round(val))}"
+        props.append(Props(attributeName=name, attributeValue=text))
+    role_detail.equipPhantomAddPropList = props
+
+
 def replace_phantom(
     role_detail: RoleDetailData,
     entry,
@@ -76,6 +112,7 @@ def replace_phantom(
     for idx in slots:
         candidate = copy.deepcopy(role_detail)
         _apply_entry(candidate, entry, idx)
+        _rebuild_add_prop_list(candidate)
         score = sum_damage(candidate)
         if best is None or score > best[0]:
             best = (score, idx, candidate)
