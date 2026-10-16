@@ -66,6 +66,8 @@ def replace_phantom(
 
     sum_damage: Callable[[RoleDetailData], float] — 伤害求和函数 (damage.py 提供)。
     """
+    from gsuid_core.logger import logger
+
     slots = _cost_slots(role_detail, entry.cost)
     if not slots:
         raise ReplaceError(f"[鸣潮] 面板上没有 cost{entry.cost} 声骸槽位")
@@ -78,4 +80,20 @@ def replace_phantom(
         if best is None or score > best[0]:
             best = (score, idx, candidate)
     assert best is not None
+    # 诊断: 替换生效性自证 — 输出替换槽位前后的词条与关键面板属性
+    old_pd = role_detail.phantomData
+    new_pd = best[2].phantomData
+    old_eq = old_pd.equipPhantomList if old_pd else None
+    new_eq = new_pd.equipPhantomList if new_pd else None
+    old_slot = old_eq[best[1]] if old_eq and old_eq[best[1]] else None
+    new_slot = new_eq[best[1]] if new_eq and new_eq[best[1]] else None
+    logger.info(
+        "[鸣潮·声骸对比] 替换槽位={} cost={} 主词条: {} -> {} | 副词条数: {} -> {}",
+        best[1],
+        entry.cost,
+        [(m.attributeName, m.attributeValue) for m in (old_slot.mainProps or [])] if old_slot else [],
+        [(m.attributeName, m.attributeValue) for m in (new_slot.mainProps or [])] if new_slot else [],
+        len(old_slot.subProps or []) if old_slot else 0,
+        len(new_slot.subProps or []) if new_slot else 0,
+    )
     return ReplaceResult(role_detail=best[2], slot_index=best[1], damage_sum=best[0])

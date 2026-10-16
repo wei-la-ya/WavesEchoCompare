@@ -16,8 +16,11 @@ from gsuid_core.plugins.XutheringWavesUID.XutheringWavesUID.utils.damage.abstrac
 
 def sum_expected_damage(role_detail: RoleDetailData) -> float:
     """全部伤害类型期望伤害求和; 无伤害模块或无声骸返回 0。"""
+    from gsuid_core.logger import logger
+
     detail = DamageDetailRegister.find_class(str(role_detail.role.roleId))
     if not detail:
+        logger.warning("[鸣潮·声骸对比] 角色 {} 无伤害计算模块, 伤害求和返回 0", role_detail.role.roleId)
         return 0.0
     if not (role_detail.phantomData and role_detail.phantomData.equipPhantomList):
         return 0.0
@@ -35,6 +38,14 @@ def sum_expected_damage(role_detail: RoleDetailData) -> float:
             total += float(str(expected).replace(",", ""))
         except (TypeError, ValueError):
             continue
+    logger.info(
+        "[鸣潮·声骸对比] {} 伤害求和={} 暴击={} 暴伤={} 攻击={}",
+        role_detail.role.roleName,
+        round(total, 1),
+        calc.role_card.get("暴击"),
+        calc.role_card.get("暴击伤害"),
+        calc.role_card.get("攻击"),
+    )
     return total
 
 
