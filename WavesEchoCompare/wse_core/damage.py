@@ -49,6 +49,11 @@ def delta_text(
     """回复文案: 伤害提升/降低了约 xx%; partial 时附加核对提醒。"""
     if before <= 0:
         return f"[鸣潮] {char_name} cost{cost} 替换对比失败: 该角色暂无伤害计算数据, 请检查计算模块是否下载完成"
+    if before == after:
+        return (
+            f"[鸣潮] {char_name} cost{cost} 替换前后伤害完全一致, 疑似计算模块异常 "
+            "(XW 资源更新后计算模块可能加载失败, 请重启 core 或更新 XutheringWavesUID 后重试)"
+        )
     pct = (after - before) / before * 100
     if pct >= 0:
         head = f"[鸣潮] {char_name} cost{cost} 替换后伤害提升了约 {pct:.1f}%"
