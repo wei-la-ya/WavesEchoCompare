@@ -25,7 +25,11 @@ def _cost_slots(role_detail: RoleDetailData, cost: int) -> list[int]:
 
 
 def _apply_entry(role_detail: RoleDetailData, entry, slot_index: int) -> None:
-    """把截图词条写进指定槽位: 主词条满值 + 副词条按截图数值。"""
+    """把截图词条写进指定槽位: 双主词条 + 副词条按截图数值。
+
+    cost1/3/4 满级声骸均为双主词条: mainProps[0]=随机主词条 (满值),
+    mainProps[1]=固定主词条 (攻击150/100 或 生命2280)。XW rawData 实证此结构。
+    """
     pd = role_detail.phantomData
     eq = pd.equipPhantomList if pd else None
     if not eq:
@@ -37,10 +41,10 @@ def _apply_entry(role_detail: RoleDetailData, entry, slot_index: int) -> None:
     if main_name == "属性伤害加成":
         main_name = f"{role_detail.role.attributeName}伤害加成"
     main_value = MAIN_VALUE[entry.main_name][entry.cost]
-    if slot.mainProps:
-        slot.mainProps[0] = Props(attributeName=main_name, attributeValue=main_value)
-    else:
-        slot.mainProps = [Props(attributeName=main_name, attributeValue=main_value)]
+    props = [Props(attributeName=main_name, attributeValue=main_value)]
+    if entry.main2_name is not None and entry.main2_value is not None:
+        props.append(Props(attributeName=entry.main2_name, attributeValue=entry.main2_value))
+    slot.mainProps = props
     slot.subProps = [Props(attributeName=name, attributeValue=value) for name, value in entry.subs]
 
 

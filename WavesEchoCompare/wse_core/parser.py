@@ -24,6 +24,13 @@ MAIN_WHITELIST: dict[int, tuple[str, ...]] = {
     4: ("攻击", "生命", "防御", "暴击", "暴击伤害", "治疗效果加成"),
 }
 
+# 固定主词条 (第二个主词条): 满 25 级数值恒定 — cost4/3 固定攻击, cost1 固定生命
+FIXED_MAIN: dict[int, tuple[str, str]] = {
+    4: ("攻击", "150"),
+    3: ("攻击", "100"),
+    1: ("生命", "2280"),
+}
+
 # OCR 属性名 → 标准属性名; 匹配方式: 去空格后「包含别名即归一」
 ATTR_ALIASES: tuple[tuple[str, str], ...] = (
     ("暴击伤害", "暴击伤害"),
@@ -51,15 +58,18 @@ _VALUE_RE = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*(%)?")
 
 @dataclass
 class EchoEntry:
-    """一张声骸卡解析结果: cost + 主词条 + 副词条 (名称与截图数值)。
+    """一张声骸卡解析结果: 双主词条 + 副词条 (名称与截图数值)。
 
-    partial: True 表示副词条少于 4 条 (模糊截图漏识别), 对比结果仅供参考。
+    cost1/3/4 满级声骸均为双主词条: 主1 (随机词条) + 主2 (固定词条),
+    副词条 5 条。partial: True 表示副词条少于 4 条 (模糊截图漏识别)。
     """
 
     cost: int
     main_name: str
     main_value: str
     subs: list[tuple[str, str]] = field(default_factory=list)
+    main2_name: str | None = None
+    main2_value: str | None = None
     partial: bool = False
 
 
@@ -221,13 +231,35 @@ def parse_echo_lines(lines: list[OcrLine], cmd_cost: int | None) -> EchoEntry:
     if not best:
         raise EchoParseError("[鸣潮] 未能从截图中识别出主词条, 请发送更清晰的声骸详情截图")
 
-    main_name = best[0][0]
+    # 固定主词条 (主2): 数值恒定, 按属性+数值精确匹配, 从词条行中剥离
+    fixed_attr, fixed_value = FIXED_MAIN[cost]
+    main2: tuple[str, str] | None = None
+    remaining: list[tuple[str, str]] = []
+    for attr, value in best:
+        if main2 is None and attr == fixed_attr and value == fixed_value:
+            main2 = (attr, value)
+            continue
+        remaining.append((attr, value))
+    if main2 is None:
+        # OCR 数值抖动容错: 固定词条行属性匹配但数值微差时, 仍按固定满值处理
+        for i, (attr, value) in enumerate(remaining):
+            if attr == fixed_attr and "%" not in value:
+                main2 = (fixed_attr, fixed_value)
+                del remaining[i]
+                break
+
+    if not remaining:
+        raise EchoParseError("[鸣潮] 未能从截图中识别出主词条, 请发送更清晰的声骸详情截图")
+
+    main_name = remaining[0][0]
     if main_name not in MAIN_WHITELIST[cost]:
         allow = "、".join(MAIN_WHITELIST[cost])
         raise EchoParseError(f"[鸣潮] cost{cost} 不存在主词条「{main_name}」(可选: {allow}), 识别可能有误, 请核对截图")
 
     entry = EchoEntry(cost=cost, main_name=main_name, main_value=MAIN_VALUE[main_name][cost])
-    entry.subs = [(attr, value) for attr, value in best[1:]]
+    if main2 is not None:
+        entry.main2_name, entry.main2_value = main2
+    entry.subs = remaining[1:]
     if len(entry.subs) < 1:
         raise EchoParseError("[鸣潮] 未识别到副词条, 请发送声骸详情截图 (含词条列表)")
     entry.partial = len(entry.subs) < 4
