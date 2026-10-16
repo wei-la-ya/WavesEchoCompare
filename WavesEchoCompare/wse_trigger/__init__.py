@@ -141,10 +141,14 @@ async def echo_compare(bot: Bot, ev: Event):
     from gsuid_core.segment import MessageSegment
     from gsuid_core.utils.image.convert import convert_img
 
-    # 图片与文案合成一条消息
-    seg = MessageSegment.image(await convert_img(merged))
+    # 文本段 + 图片段列表发送 (MessageSegment 不能嵌进 f-string)
     text = delta_text(char_name, entry.cost, before, after, entry.partial, len(entry.subs))
-    await bot.send(f"{text}\n(左:替换前 / 右:替换后)\n{seg}")
+    await bot.send(
+        [
+            MessageSegment.text(f"{text}\n(左:替换前 / 右:替换后)"),
+            MessageSegment.image(await convert_img(merged)),
+        ]
+    )
 
 
 def _concat_pk_images(im1: Image.Image, im2: Image.Image) -> Image.Image:
