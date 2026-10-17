@@ -155,3 +155,57 @@ def test_inference_supports_split_name_and_value_columns() -> None:
 def test_invalid_command_cost_is_rejected() -> None:
     with pytest.raises(EchoParseError, match="仅支持替换"):
         parse_echo_lines(_lines("攻击18%", "暴击10.5%"), 2)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("7.9% +共鸣解放伤害加成", "共鸣解放伤害加成"),
+        ("+共鸣解放伤害加成 8.6%", "共鸣解放伤害加成"),
+        ("9.4% 共鸣技能伤害加成", "共鸣技能伤害加成"),
+        ("共 鸣 技 能 伤 害 加 成 9.4%", "共鸣技能伤害加成"),
+        ("普攻伤害加成 7.9%", "普攻伤害加成"),
+        ("普通攻击伤害加成 7.9%", "普攻伤害加成"),
+        ("重击伤害加成 7.9%", "重击伤害加成"),
+        ("冷凝伤害加成 30%", "属性伤害加成"),
+        ("热熔伤害加成 30%", "属性伤害加成"),
+        ("导电伤害加成 30%", "属性伤害加成"),
+        ("气动伤害加成 30%", "属性伤害加成"),
+        ("衍射伤害加成 30%", "属性伤害加成"),
+        ("湮灭伤害加成 30%", "属性伤害加成"),
+        ("属性伤害加成 30%", "属性伤害加成"),
+        ("伤害加成 7.9%", None),
+        ("未知伤害加成 7.9%", None),
+    ],
+)
+def test_damage_bonus_names_keep_their_category(text: str, expected: str | None) -> None:
+    assert parser.normalize_attr(text) == expected
+
+
+@pytest.mark.parametrize("name", ["共鸣技能伤害加成", "共鸣解放伤害加成", "普攻伤害加成", "重击伤害加成"])
+def test_damage_type_substat_cannot_infer_cost3(name: str) -> None:
+    with pytest.raises(EchoParseError, match="明确判断声骸 COST"):
+        parse_echo_lines(_lines(f"{name}30%", "攻击100", "暴击10.5%"), None)
+
+
+def test_screenshot_substat_names_and_values_are_preserved() -> None:
+    entry = parse_echo_lines(
+        _lines(
+            "暴击伤害 44.0%",
+            "攻击 150",
+            "共鸣效率 10.0%",
+            "暴击 7.5%",
+            "暴击伤害 13.8%",
+            "攻击 40",
+            "7.9% +共鸣解放伤害加成",
+        ),
+        None,
+    )
+    assert entry.cost == 4
+    assert entry.subs == [
+        ("共鸣效率", "10.0%"),
+        ("暴击", "7.5%"),
+        ("暴击伤害", "13.8%"),
+        ("攻击", "40"),
+        ("共鸣解放伤害加成", "7.9%"),
+    ]
