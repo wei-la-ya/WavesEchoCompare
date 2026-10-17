@@ -1,6 +1,7 @@
 """OCR 文本行 → 声骸词条结构; cost 主词条白名单强校验。"""
 
 import re
+from math import isclose
 from dataclasses import field, dataclass
 
 from .ocr import OcrLine
@@ -54,6 +55,8 @@ ATTR_ALIASES: tuple[tuple[str, str], ...] = (
 )
 
 _VALUE_RE = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*(%)?")
+_COST_RE = re.compile(r"(?:COST|C0?ST)[^0-9]{0,3}([134])(?![\d.])|^C([134])$")
+_COST_MIN_SCORE = 0.8
 
 
 @dataclass
@@ -131,15 +134,15 @@ def _cluster_cards(lines: list[OcrLine]) -> list[list[OcrLine]]:
 def _detect_cost(lines: list[OcrLine], cmd_cost: int | None) -> int | None:
     if cmd_cost is not None:
         return cmd_cost
+    costs: set[int] = set()
     for line in lines:
+        if line.score < _COST_MIN_SCORE:
+            continue
         text = line.text.replace(" ", "").upper()
-        m = re.search(r"(?:COST|C0?ST)[^0-9]{0,3}([134])", text)
+        m = _COST_RE.search(text)
         if m:
-            return int(m.group(1))
-        m = re.match(r"^C([134])$", text)
-        if m:
-            return int(m.group(1))
-    return None
+            costs.add(int(m.group(1) or m.group(2)))
+    return next(iter(costs)) if len(costs) == 1 else None
 
 
 def _pure_value_line(text: str) -> str | None:
@@ -214,24 +217,59 @@ def _main_from_rows(rows: list[tuple[str, str]]) -> tuple[str, str] | None:
 
 def _card_has_cost(card: list[OcrLine], cost: int) -> bool:
     """卡内是否出现与 cost 对应的 COST 字样 (多卡截图时用于选卡)。"""
-    for line in card:
-        text = line.text.replace(" ", "").upper()
-        if f"COST{cost}" in text or re.fullmatch(rf"C?0?ST?{cost}", text):
-            return True
-    return False
+    return _detect_cost(card, None) == cost
+
+
+def _is_fixed_main(attr: str, value: str, cost: int) -> bool:
+    fixed_attr, fixed_value = FIXED_MAIN[cost]
+    if attr != fixed_attr or _pure_value_line(value) is None or "%" in value:
+        return False
+    return abs(float(value) - float(fixed_value)) <= float(fixed_value) * 0.15
+
+
+def _split_main_rows(rows: list[tuple[str, str]], cost: int) -> tuple[tuple[str, str] | None, list[tuple[str, str]]]:
+    # 固定主词条只在前两行查找，避免用副词条推断 COST。
+    for i, (attr, value) in enumerate(rows[:2]):
+        if _is_fixed_main(attr, value, cost):
+            return FIXED_MAIN[cost], rows[:i] + rows[i + 1 :]
+    return None, rows
+
+
+def _infer_cost(rows: list[tuple[str, str]]) -> int | None:
+    """按主词条满值选最近档位，固定主词条用于消歧与交叉校验。"""
+    matches: list[tuple[int, float]] = []
+    fixed_costs = {cost for cost in FIXED_MAIN if any(_is_fixed_main(attr, value, cost) for attr, value in rows[:2])}
+    for cost in MAIN_WHITELIST:
+        _, remaining = _split_main_rows(rows, cost)
+        if not remaining:
+            continue
+        attr, value = remaining[0]
+        if attr not in MAIN_WHITELIST[cost] or _pure_value_line(value) is None:
+            continue
+        full_value = float(MAIN_VALUE[attr][cost].rstrip("%"))
+        distance = abs(float(value.rstrip("%")) - full_value)
+        if distance <= full_value * 0.1:
+            matches.append((cost, distance))
+    if not matches:
+        return None
+    nearest = min(distance for _, distance in matches)
+    costs = {
+        cost
+        for cost, distance in matches
+        if isclose(distance, nearest, abs_tol=1e-9) and (not fixed_costs or cost in fixed_costs)
+    }
+    return next(iter(costs)) if len(costs) == 1 else None
 
 
 def parse_echo_lines(lines: list[OcrLine], cmd_cost: int | None) -> EchoEntry:
     cost = _detect_cost(lines, cmd_cost)
-    if cost is None:
-        raise EchoParseError("[鸣潮] 未能从截图中识别出 COST, 请在命令中带上 cost, 如: ww角色名提升3")
-    if cost not in (1, 3, 4):
+    if cost is not None and cost not in MAIN_WHITELIST:
         raise EchoParseError("[鸣潮] 仅支持替换 cost1 / cost3 / cost4 声骸")
 
     cards = _cluster_cards(lines)
     # 多卡截图: 优先选带 COST 字样的卡; 无则全部参选 (声骸浮窗截图无 COST 字样)
-    with_cost = [c for c in cards if _card_has_cost(c, cost)]
-    candidates = with_cost or cards
+    with_cost = [c for c in cards if cost is not None and _card_has_cost(c, cost)]
+    candidates = [c for c in with_cost if _extract_prop_rows(c)] or cards
     best: list[tuple[str, str]] | None = None
     for card in candidates:
         rows = _extract_prop_rows(card)
@@ -241,29 +279,15 @@ def parse_echo_lines(lines: list[OcrLine], cmd_cost: int | None) -> EchoEntry:
     if not best:
         raise EchoParseError("[鸣潮] 未能从截图中识别出主词条, 请发送更清晰的声骸详情截图")
 
-    # 固定主词条 (主2): 数值恒定, 按属性+数值精确匹配, 从词条行中剥离
-    fixed_attr, fixed_value = FIXED_MAIN[cost]
-    main2: tuple[str, str] | None = None
-    remaining: list[tuple[str, str]] = []
-    for attr, value in best:
-        if main2 is None and attr == fixed_attr and value == fixed_value:
-            main2 = (attr, value)
-            continue
-        remaining.append((attr, value))
-    if main2 is None:
-        # OCR 数值抖动容错: 平值与固定满值偏差 ≤15% 才视为固定主词条
-        # (副词条平攻最高 ~70, 与固定攻击 100/150 距离足够, 不会误吞)
-        fixed_num = float(fixed_value)
-        for i, (attr, value) in enumerate(remaining):
-            if attr != fixed_attr or "%" in value:
-                continue
-            try:
-                if abs(float(value) - fixed_num) <= fixed_num * 0.15:
-                    main2 = (fixed_attr, fixed_value)
-                    del remaining[i]
-                    break
-            except ValueError:
-                continue
+    if cost is None:
+        cost = _infer_cost(best)
+    if cost is None:
+        raise EchoParseError(
+            "[鸣潮] 未能从 COST 标识或主词条明确判断声骸 COST, "
+            "请发送更清晰的满级声骸详情截图, 或在命令中指定, 如: ww角色名提升预估3"
+        )
+
+    main2, remaining = _split_main_rows(best, cost)
 
     if not remaining:
         raise EchoParseError("[鸣潮] 未能从截图中识别出主词条, 请发送更清晰的声骸详情截图")
