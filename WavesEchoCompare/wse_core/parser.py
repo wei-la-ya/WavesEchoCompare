@@ -74,7 +74,7 @@ class EchoEntry:
     """一张声骸卡解析结果: 双主词条 + 副词条 (名称与截图数值)。
 
     cost1/3/4 满级声骸均为双主词条: 主1 (随机词条) + 主2 (固定词条),
-    副词条 5 条。partial: True 表示副词条少于 4 条 (模糊截图漏识别)。
+    副词条 5 条。partial: True 表示副词条少于 5 条 (未调谐或截图漏识别)。
     """
 
     cost: int
@@ -100,6 +100,9 @@ _TYPO_FIX: tuple[tuple[str, str], ...] = (
     ("共鸡", "共鸣"),
     ("充能", "共鸣"),
     ("冫台疗", "治疗"),
+    ("伤客", "伤害"),
+    ("伤喜", "伤害"),
+    ("伤赛", "伤害"),
 )
 
 
@@ -324,6 +327,8 @@ def parse_echo_lines(lines: list[OcrLine], cmd_cost: int | None) -> EchoEntry:
     entry.subs = remaining[1:]
     if len(entry.subs) < 1:
         raise EchoParseError("[鸣潮] 未识别到副词条, 请发送声骸详情截图 (含词条列表)")
+    if len(entry.subs) > 5:
+        raise EchoParseError("[鸣潮] 单卡副词条超过 5 条，可能混入其他声骸，请分开截图后重试")
     # 满 25 级声骸应识别到 5 条副词条; 不足即提醒
     entry.partial = len(entry.subs) < 5
     return entry

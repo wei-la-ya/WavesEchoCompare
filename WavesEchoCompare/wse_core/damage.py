@@ -51,7 +51,7 @@ def sum_expected_damage(role_detail: RoleDetailData) -> float:
 
 def delta_text(
     char_name: str,
-    cost: int,
+    cost: int | str,
     before: float,
     after: float,
     partial: bool = False,

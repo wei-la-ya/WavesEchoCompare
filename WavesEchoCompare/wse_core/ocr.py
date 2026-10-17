@@ -1,5 +1,6 @@
 """声骸截图 OCR 识别 (rapidocr 懒加载, to_thread 执行, 多 pass 抗模糊)。"""
 
+import threading
 from dataclasses import dataclass
 
 from PIL import Image
@@ -24,19 +25,15 @@ class OcrLine:
 
 _engine = None
 _engine_failed = False
-_engine_lock = None
+_engine_lock = threading.Lock()
 
 
 def _get_engine():
-    global _engine, _engine_failed, _engine_lock
+    global _engine, _engine_failed
     if _engine is not None:
         return _engine
     if _engine_failed:
         raise OcrUnavailableError("[鸣潮·声骸对比] OCR 组件初始化失败, 请检查 rapidocr-onnxruntime 是否安装完整")
-    import threading
-
-    if _engine_lock is None:
-        _engine_lock = threading.Lock()
     from rapidocr_onnxruntime import RapidOCR
 
     with _engine_lock:
@@ -53,20 +50,15 @@ def _get_engine():
     return _engine
 
 
-_infer_lock = None
+_infer_lock = threading.Lock()
 
 
 def _run_once(im: Image.Image) -> list[OcrLine]:
-    global _infer_lock
-    import threading
-
     engine = _get_engine()
     import numpy as np
 
     arr = np.array(im.convert("RGB"))
     # RapidOCR 内部非全线程安全, 推理段串行化 (单次推理很快, 无并发瓶颈)
-    if _infer_lock is None:
-        _infer_lock = threading.Lock()
     with _infer_lock:
         raw, _elapse = engine(arr)
     lines: list[OcrLine] = []
@@ -97,11 +89,12 @@ def _merge_lines(line_groups: list[list[OcrLine]], scales: list[float]) -> list[
     normalized: list[OcrLine] = []
     for idx, p in enumerate(line_groups):
         scale = scales[idx] if idx < len(scales) else 1.0
+        group: list[OcrLine] = []
         for ln in p:
             if scale == 1.0:
-                normalized.append(ln)
+                group.append(ln)
             else:
-                normalized.append(
+                group.append(
                     OcrLine(
                         text=ln.text,
                         score=ln.score,
@@ -111,33 +104,51 @@ def _merge_lines(line_groups: list[list[OcrLine]], scales: list[float]) -> list[
                         w=int(ln.w / scale),
                     )
                 )
+        normalized.extend(merge_card_rows(group))
 
     merged: list[OcrLine] = []
-    all_lines = sorted(normalized, key=lambda ln: (ln.y, ln.x))
-    for ln in all_lines:
-        if not merged:
-            merged.append(ln)
-            continue
-        prev = merged[-1]
-        same_row = abs(ln.y - prev.y) <= max(prev.h, ln.h, 12)
-        # x 区间相交判定 (双向): [ln.x, ln.x+ln.w] ∩ [prev.x, prev.x+prev.w] 非空
-        overlaps = ln.x <= prev.x + prev.w and prev.x <= ln.x + ln.w
-        if same_row and overlaps:
-            # 同一视觉行且 x 重叠: 保留文本更长 (信息更全) 的一行
-            if len(ln.text) > len(prev.text):
-                merged[-1] = ln
-        elif same_row:
-            # 同一视觉行但 x 分列 (名称/数值两段布局): 拼接
-            merged[-1] = OcrLine(
-                text=f"{prev.text} {ln.text}",
-                score=min(prev.score, ln.score),
-                x=min(prev.x, ln.x),
-                y=min(prev.y, ln.y),
-                h=max(prev.h, ln.h),
-                w=max(prev.x + prev.w, ln.x + ln.w) - min(prev.x, ln.x),
+    # 跨 pass 去重只比较同一文本框，不把相邻的两条词条合并。
+    for line in sorted(normalized, key=lambda item: (item.y, item.x)):
+        matched: int | None = None
+        for i, previous in enumerate(merged):
+            distance = abs(line.y + line.h / 2 - previous.y - previous.h / 2)
+            overlap = line.x < previous.x + previous.w and previous.x < line.x + line.w
+            if distance <= max(3, min(line.h, previous.h) * 0.5) and overlap:
+                matched = i
+                break
+        if matched is None:
+            merged.append(line)
+        elif (line.score, len(line.text)) > (merged[matched].score, len(merged[matched].text)):
+            merged[matched] = line
+    return merge_card_rows(merged)
+
+
+def merge_card_rows(lines: list[OcrLine]) -> list[OcrLine]:
+    rows: list[list[OcrLine]] = []
+    for line in sorted(lines, key=lambda item: (item.y + item.h / 2, item.x)):
+        if rows:
+            previous = rows[-1][0]
+            distance = abs(line.y + line.h / 2 - previous.y - previous.h / 2)
+            if distance <= max(3, min(line.h, previous.h) * 0.5):
+                rows[-1].append(line)
+                continue
+        rows.append([line])
+    merged: list[OcrLine] = []
+    for row in rows:
+        row.sort(key=lambda item: item.x)
+        left, top = min(item.x for item in row), min(item.y for item in row)
+        right = max(item.x + item.w for item in row)
+        bottom = max(item.y + item.h for item in row)
+        merged.append(
+            OcrLine(
+                " ".join(item.text for item in row),
+                min(item.score for item in row),
+                left,
+                top,
+                bottom - top,
+                right - left,
             )
-        else:
-            merged.append(ln)
+        )
     return merged
 
 
@@ -145,6 +156,23 @@ def _run_scaled(im: Image.Image, scale: float) -> list[OcrLine]:
     w, h = int(im.size[0] * scale), int(im.size[1] * scale)
     up = im.resize((w, h), Image.Resampling.LANCZOS)
     return _run_once(up)
+
+
+@to_thread
+def run_ocr_layout(im: Image.Image, scale: float = 1.0) -> list[OcrLine]:
+    """保留独立文本框，供卡片分区使用。"""
+    lines = _run_once(im) if scale == 1.0 else _run_scaled(im, scale)
+    return [
+        OcrLine(
+            line.text,
+            line.score,
+            int(line.x / scale),
+            int(line.y / scale),
+            max(1, int(line.h / scale)),
+            int(line.w / scale),
+        )
+        for line in lines
+    ]
 
 
 @to_thread
